@@ -11,7 +11,10 @@
 use reqwest;
 
 use super::{configuration, Error};
-use crate::apis::ResponseContent;
+use crate::{
+    apis::ResponseContent,
+    models::{ContentKey, FetchOption, ReferenceType},
+};
 
 /// struct for typed errors of method [`assign_reference_v2`]
 #[derive(Debug, Clone, Serialize, Deserialize)]
