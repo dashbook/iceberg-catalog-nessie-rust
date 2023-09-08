@@ -11,6 +11,7 @@ use iceberg_rust::{
     },
     object_store::ObjectStore,
     table::Table,
+    util::strip_prefix,
     view::View,
 };
 
@@ -102,7 +103,7 @@ impl Catalog for NessieCatalog {
     async fn drop_table(&self, identifier: &Identifier) -> Result<()> {
         v1_api::commit_multiple_operations(
             &self.configuration,
-            "",
+            "main",
             None,
             Some(Operations::new(
                 CommitMeta::default(),
@@ -152,12 +153,10 @@ impl Catalog for NessieCatalog {
             } => Ok(metadata_location),
             _ => Err(anyhow!("Table is not an Iceberg table")),
         })
-        .and_then(|y| url::Url::parse(&y).map_err(anyhow::Error::msg))?
-        .path()
-        .into();
+        .map_err(anyhow::Error::msg)?;
         let bytes = &self
             .object_store
-            .get(&path)
+            .get(&strip_prefix(&path).as_str().into())
             .await
             .map_err(|err| anyhow!(err.to_string()))?
             .bytes()
@@ -201,7 +200,7 @@ impl Catalog for NessieCatalog {
     ) -> Result<Relation> {
         v1_api::commit_multiple_operations(
             &self.configuration,
-            "",
+            "main",
             None,
             Some(Operations::new(
                 CommitMeta::default(),
@@ -242,7 +241,7 @@ impl Catalog for NessieCatalog {
     ) -> Result<Relation> {
         v1_api::commit_multiple_operations(
             &self.configuration,
-            "",
+            "main",
             None,
             Some(Operations::new(
                 CommitMeta::default(),
