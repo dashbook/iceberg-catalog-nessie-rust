@@ -169,7 +169,7 @@ impl Catalog for NessieCatalog {
         let catalog: Arc<dyn Catalog> = self;
         match metadata {
             RelationMetadata::Table(metadata) => Ok(Relation::Table(
-                Table::new_metastore_table(
+                Table::new(
                     identifier.clone(),
                     Arc::clone(&catalog),
                     metadata,
@@ -357,12 +357,11 @@ pub mod tests {
                 ],
             },
         };
-        let mut table =
-            TableBuilder::new_metastore_table("/", schema, identifier.clone(), catalog.clone())
-                .expect("Failed to create table builder.")
-                .commit()
-                .await
-                .expect("Failed to create table.");
+        let mut table = TableBuilder::new("/", schema, identifier.clone(), catalog.clone())
+            .expect("Failed to create table builder.")
+            .commit()
+            .await
+            .expect("Failed to create table.");
 
         let exists = Arc::clone(&catalog)
             .table_exists(&identifier)
