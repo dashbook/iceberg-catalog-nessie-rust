@@ -9,6 +9,7 @@ use iceberg_rust::{
         relation::{Relation, RelationMetadata},
         Catalog,
     },
+    materialized_view::MaterializedView,
     object_store::ObjectStore,
     table::Table,
     util::strip_prefix,
@@ -181,6 +182,15 @@ impl Catalog for NessieCatalog {
                 View::new(
                     identifier.clone(),
                     Arc::clone(&catalog),
+                    metadata,
+                    &path.to_string(),
+                )
+                .await?,
+            )),
+            RelationMetadata::MaterializedView(metadata) => Ok(Relation::MaterializedView(
+                MaterializedView::new(
+                    identifier.clone(),
+                    catalog.clone(),
                     metadata,
                     &path.to_string(),
                 )
