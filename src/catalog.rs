@@ -1,6 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use iceberg_rust::{
     catalog::{
@@ -9,6 +8,7 @@ use iceberg_rust::{
         relation::{Relation, RelationMetadata},
         Catalog,
     },
+    error::Error as IcebergError,
     materialized_view::MaterializedView,
     object_store::ObjectStore,
     table::Table,
@@ -23,6 +23,7 @@ use crate::{
     },
 };
 
+#[derive(Debug)]
 pub struct NessieCatalog {
     configuration: configuration::Configuration,
     object_store: Arc<dyn ObjectStore>,
@@ -43,7 +44,7 @@ impl NessieCatalog {
 #[async_trait]
 impl Catalog for NessieCatalog {
     /// Lists all tables in the given namespace.
-    async fn list_tables(&self, namespace: &Namespace) -> Result<Vec<Identifier>> {
+    async fn list_tables(&self, namespace: &Namespace) -> Result<Vec<Identifier>, IcebergError> {
         let tables = v1_api::get_entries(
             &self.configuration,
             "main",
@@ -59,10 +60,10 @@ impl Catalog for NessieCatalog {
             .into_iter()
             .filter(|entry| entry.r#type == Some("ICEBERG_TABLE".to_string()))
             .map(|entry| Identifier::try_new(&entry.name.elements))
-            .collect::<Result<Vec<Identifier>>>()
+            .collect::<Result<Vec<Identifier>, IcebergError>>()
     }
     /// Lists all namespaces in the catalog.
-    async fn list_namespaces(&self, parent: Option<&str>) -> Result<Vec<Namespace>> {
+    async fn list_namespaces(&self, parent: Option<&str>) -> Result<Vec<Namespace>, IcebergError> {
         let namespaces = v1_api::get_namespaces(
             &self.configuration,
             "main",
@@ -75,7 +76,10 @@ impl Catalog for NessieCatalog {
         namespaces
             .namespaces
             .first()
-            .ok_or(anyhow!("No namespaces found."))?
+            .ok_or(IcebergError::NotFound(
+                "Namespace".to_string(),
+                "".to_string(),
+            ))?
             .elements
             .iter()
             .map(|namespace| {
@@ -86,10 +90,10 @@ impl Catalog for NessieCatalog {
                         .collect::<Vec<String>>(),
                 )
             })
-            .collect::<Result<Vec<Namespace>>>()
+            .collect::<Result<Vec<Namespace>, IcebergError>>()
     }
     /// Check if a table exists
-    async fn table_exists(&self, identifier: &Identifier) -> Result<bool> {
+    async fn table_exists(&self, identifier: &Identifier) -> Result<bool, IcebergError> {
         v1_api::get_content(
             &self.configuration,
             &identifier.to_string(),
@@ -98,10 +102,10 @@ impl Catalog for NessieCatalog {
         )
         .await
         .map(|_| true)
-        .map_err(anyhow::Error::msg)
+        .map_err(IcebergError::from)
     }
     /// Drop a table and delete all data and metadata files.
-    async fn drop_table(&self, identifier: &Identifier) -> Result<()> {
+    async fn drop_table(&self, identifier: &Identifier) -> Result<(), IcebergError> {
         v1_api::commit_multiple_operations(
             &self.configuration,
             "main",
@@ -121,10 +125,13 @@ impl Catalog for NessieCatalog {
         )
         .await
         .map(|_| ())
-        .map_err(anyhow::Error::msg)
+        .map_err(IcebergError::from)
     }
     /// Load a table.
-    async fn load_table(self: Arc<Self>, identifier: &Identifier) -> Result<Relation> {
+    async fn load_table(
+        self: Arc<Self>,
+        identifier: &Identifier,
+    ) -> Result<Relation, IcebergError> {
         let path = v1_api::get_content(
             &self.configuration,
             &identifier.to_string(),
@@ -132,7 +139,7 @@ impl Catalog for NessieCatalog {
             Some("main"),
         )
         .await
-        .map_err(anyhow::Error::msg)
+        .map_err(IcebergError::from)
         .and_then(|x| match x {
             ContentV1::IcebergTableV1 {
                 id: _id,
@@ -152,21 +159,16 @@ impl Catalog for NessieCatalog {
                 dialect: _dialect,
                 metadata: _metadata,
             } => Ok(metadata_location),
-            _ => Err(anyhow!("Table is not an Iceberg table")),
+            _ => Err(IcebergError::InvalidFormat("iceberg table".to_string())),
         })
-        .map_err(anyhow::Error::msg)?;
+        .map_err(IcebergError::from)?;
         let bytes = &self
             .object_store
             .get(&strip_prefix(&path).as_str().into())
-            .await
-            .map_err(|err| anyhow!(err.to_string()))?
+            .await?
             .bytes()
-            .await
-            .map_err(|err| anyhow!(err.to_string()))?;
-        let metadata: RelationMetadata = serde_json::from_str(
-            std::str::from_utf8(bytes).map_err(|err| anyhow!(err.to_string()))?,
-        )
-        .map_err(|err| anyhow!(err.to_string()))?;
+            .await?;
+        let metadata: RelationMetadata = serde_json::from_str(std::str::from_utf8(bytes)?)?;
         let catalog: Arc<dyn Catalog> = self;
         match metadata {
             RelationMetadata::Table(metadata) => Ok(Relation::Table(
@@ -199,7 +201,7 @@ impl Catalog for NessieCatalog {
         }
     }
     /// Invalidate cached table metadata from current catalog.
-    async fn invalidate_table(&self, _identifier: &Identifier) -> Result<()> {
+    async fn invalidate_table(&self, _identifier: &Identifier) -> Result<(), IcebergError> {
         unimplemented!()
     }
     /// Register a table with the catalog if it doesn't exist.
@@ -207,7 +209,7 @@ impl Catalog for NessieCatalog {
         self: Arc<Self>,
         identifier: Identifier,
         metadata_file_location: &str,
-    ) -> Result<Relation> {
+    ) -> Result<Relation, IcebergError> {
         v1_api::commit_multiple_operations(
             &self.configuration,
             "main",
@@ -239,7 +241,7 @@ impl Catalog for NessieCatalog {
         )
         .await
         .map(|_| ())
-        .map_err(anyhow::Error::msg)?;
+        .map_err(IcebergError::from)?;
         self.load_table(&identifier).await
     }
     /// Update a table by atomically changing the pointer to the metadata file
@@ -248,7 +250,7 @@ impl Catalog for NessieCatalog {
         identifier: Identifier,
         metadata_file_location: &str,
         previous_metadata_file_location: &str,
-    ) -> Result<Relation> {
+    ) -> Result<Relation, IcebergError> {
         v1_api::commit_multiple_operations(
             &self.configuration,
             "main",
@@ -295,15 +297,17 @@ impl Catalog for NessieCatalog {
             )),
         )
         .await
-        .map(|_| ())
-        .map_err(anyhow::Error::msg)?;
+        .map(|_| ())?;
         self.load_table(&identifier).await
     }
     /// Initialize a catalog given a custom name and a map of catalog properties.
     /// A custom Catalog implementation must have a no-arg constructor. A compute engine like Spark
     /// or Flink will first initialize the catalog without any arguments, and then call this method to
     /// complete catalog initialization with properties passed into the engine.
-    async fn initialize(self: Arc<Self>, _properties: &HashMap<String, String>) -> Result<()> {
+    async fn initialize(
+        self: Arc<Self>,
+        _properties: &HashMap<String, String>,
+    ) -> Result<(), IcebergError> {
         unimplemented!()
     }
     /// Return the associated object store to the catalog
@@ -318,11 +322,11 @@ pub mod tests {
 
     use iceberg_rust::{
         catalog::{identifier::Identifier, Catalog},
-        model::{
-            schema::SchemaV2,
-            types::{PrimitiveType, StructField, StructType, Type},
-        },
         object_store::{memory::InMemory, ObjectStore},
+        spec::{
+            schema::Schema,
+            types::{PrimitiveType, StructField, StructTypeBuilder, Type},
+        },
         table::table_builder::TableBuilder,
     };
 
@@ -345,33 +349,33 @@ pub mod tests {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let catalog: Arc<dyn Catalog> = Arc::new(NessieCatalog::new(configuration(), object_store));
         let identifier = Identifier::parse("load_table.table3").unwrap();
-        let schema = SchemaV2 {
+        let schema = Schema {
             schema_id: 1,
             identifier_field_ids: Some(vec![1, 2]),
-            fields: StructType {
-                fields: vec![
-                    StructField {
-                        id: 1,
-                        name: "one".to_string(),
-                        required: false,
-                        field_type: Type::Primitive(PrimitiveType::String),
-                        doc: None,
-                    },
-                    StructField {
-                        id: 2,
-                        name: "two".to_string(),
-                        required: false,
-                        field_type: Type::Primitive(PrimitiveType::String),
-                        doc: None,
-                    },
-                ],
-            },
+            fields: StructTypeBuilder::default()
+                .with_struct_field(StructField {
+                    id: 1,
+                    name: "one".to_string(),
+                    required: false,
+                    field_type: Type::Primitive(PrimitiveType::String),
+                    doc: None,
+                })
+                .with_struct_field(StructField {
+                    id: 2,
+                    name: "two".to_string(),
+                    required: false,
+                    field_type: Type::Primitive(PrimitiveType::String),
+                    doc: None,
+                })
+                .build()
+                .unwrap(),
         };
-        let mut table = TableBuilder::new("/", schema, identifier.clone(), catalog.clone())
-            .expect("Failed to create table builder.")
-            .commit()
-            .await
-            .expect("Failed to create table.");
+        let mut builder = TableBuilder::new(identifier.clone(), catalog.clone()).unwrap();
+        builder
+            .location("/")
+            .with_schema((1, schema))
+            .current_schema_id(1);
+        let mut table = builder.build().await.expect("Failed to create table.");
 
         let exists = Arc::clone(&catalog)
             .table_exists(&identifier)

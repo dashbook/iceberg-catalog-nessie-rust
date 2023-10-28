@@ -8,4 +8,5 @@ extern crate url;
 
 pub mod apis;
 pub mod catalog;
+pub mod error;
 pub mod models;
