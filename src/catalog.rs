@@ -5,7 +5,7 @@ use iceberg_rust::{
     catalog::{
         identifier::Identifier,
         namespace::Namespace,
-        relation::{Relation, RelationMetadata},
+        tabular::{Tabular, TabularMetadata},
         Catalog,
     },
     error::Error as IcebergError,
@@ -128,10 +128,7 @@ impl Catalog for NessieCatalog {
         .map_err(IcebergError::from)
     }
     /// Load a table.
-    async fn load_table(
-        self: Arc<Self>,
-        identifier: &Identifier,
-    ) -> Result<Relation, IcebergError> {
+    async fn load_table(self: Arc<Self>, identifier: &Identifier) -> Result<Tabular, IcebergError> {
         let path = v1_api::get_content(
             &self.configuration,
             &identifier.to_string(),
@@ -168,10 +165,10 @@ impl Catalog for NessieCatalog {
             .await?
             .bytes()
             .await?;
-        let metadata: RelationMetadata = serde_json::from_str(std::str::from_utf8(bytes)?)?;
+        let metadata: TabularMetadata = serde_json::from_str(std::str::from_utf8(bytes)?)?;
         let catalog: Arc<dyn Catalog> = self;
         match metadata {
-            RelationMetadata::Table(metadata) => Ok(Relation::Table(
+            TabularMetadata::Table(metadata) => Ok(Tabular::Table(
                 Table::new(
                     identifier.clone(),
                     Arc::clone(&catalog),
@@ -180,7 +177,7 @@ impl Catalog for NessieCatalog {
                 )
                 .await?,
             )),
-            RelationMetadata::View(metadata) => Ok(Relation::View(
+            TabularMetadata::View(metadata) => Ok(Tabular::View(
                 View::new(
                     identifier.clone(),
                     Arc::clone(&catalog),
@@ -189,7 +186,7 @@ impl Catalog for NessieCatalog {
                 )
                 .await?,
             )),
-            RelationMetadata::MaterializedView(metadata) => Ok(Relation::MaterializedView(
+            TabularMetadata::MaterializedView(metadata) => Ok(Tabular::MaterializedView(
                 MaterializedView::new(
                     identifier.clone(),
                     catalog.clone(),
@@ -209,7 +206,7 @@ impl Catalog for NessieCatalog {
         self: Arc<Self>,
         identifier: Identifier,
         metadata_file_location: &str,
-    ) -> Result<Relation, IcebergError> {
+    ) -> Result<Tabular, IcebergError> {
         v1_api::commit_multiple_operations(
             &self.configuration,
             "main",
@@ -250,7 +247,7 @@ impl Catalog for NessieCatalog {
         identifier: Identifier,
         metadata_file_location: &str,
         previous_metadata_file_location: &str,
-    ) -> Result<Relation, IcebergError> {
+    ) -> Result<Tabular, IcebergError> {
         v1_api::commit_multiple_operations(
             &self.configuration,
             "main",
