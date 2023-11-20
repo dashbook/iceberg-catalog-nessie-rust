@@ -10,11 +10,11 @@ use iceberg_rust::{
     },
     error::Error as IcebergError,
     materialized_view::MaterializedView,
-    object_store::ObjectStore,
     table::Table,
     util::strip_prefix,
     view::View,
 };
+use object_store::ObjectStore;
 
 use crate::{
     apis::{configuration, v1_api},
@@ -319,13 +319,13 @@ pub mod tests {
 
     use iceberg_rust::{
         catalog::{identifier::Identifier, Catalog},
-        object_store::{memory::InMemory, ObjectStore},
         spec::{
             schema::Schema,
             types::{PrimitiveType, StructField, StructTypeBuilder, Type},
         },
         table::table_builder::TableBuilder,
     };
+    use object_store::{memory::InMemory, ObjectStore};
 
     use crate::{apis::configuration::Configuration, catalog::NessieCatalog};
 
@@ -382,7 +382,7 @@ pub mod tests {
 
         let metadata_location = table.metadata_location().to_string();
 
-        let transaction = table.new_transaction();
+        let transaction = table.new_transaction(None);
         transaction.commit().await.expect("Transaction failed.");
 
         let new_metadata_location = table.metadata_location().to_string();
