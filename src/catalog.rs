@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use iceberg_rust::{
     catalog::{
-        bucket::{parse_bucket, Bucket},
+        bucket::{parse_bucket, Bucket, ObjectStoreBuilder},
         identifier::Identifier,
         namespace::Namespace,
         tabular::{Tabular, TabularMetadata},
@@ -15,10 +15,7 @@ use iceberg_rust::{
     util::strip_prefix,
     view::View,
 };
-use object_store::{
-    aws::AmazonS3Builder, gcp::GoogleCloudStorageBuilder, local::LocalFileSystem, memory::InMemory,
-    ObjectStore,
-};
+use object_store::ObjectStore;
 
 use crate::{
     apis::{configuration, v1_api},
@@ -312,40 +309,6 @@ impl Catalog for NessieCatalog {
     /// Return the associated object store to the catalog
     fn object_store(&self, bucket: Bucket) -> Arc<dyn ObjectStore> {
         self.builder.build(bucket).unwrap()
-    }
-}
-
-#[derive(Debug)]
-pub enum ObjectStoreBuilder {
-    S3(AmazonS3Builder),
-    GCS(GoogleCloudStorageBuilder),
-    Filesystem(Arc<LocalFileSystem>),
-    Memory(Arc<InMemory>),
-}
-
-impl ObjectStoreBuilder {
-    fn build(&self, bucket: Bucket) -> Result<Arc<dyn ObjectStore>, IcebergError> {
-        match (bucket, self) {
-            (Bucket::S3(bucket), Self::S3(builder)) => Ok::<_, IcebergError>(Arc::new(
-                builder
-                    .clone()
-                    .with_bucket_name(bucket)
-                    .build()
-                    .map_err(IcebergError::from)?,
-            )),
-            (Bucket::GCS(bucket), Self::GCS(builder)) => Ok::<_, IcebergError>(Arc::new(
-                builder
-                    .clone()
-                    .with_bucket_name(bucket)
-                    .build()
-                    .map_err(IcebergError::from)?,
-            )),
-            (Bucket::Local, Self::Filesystem(object_store)) => Ok(object_store.clone()),
-            (Bucket::Local, Self::Memory(object_store)) => Ok(object_store.clone()),
-            _ => Err(IcebergError::NotSupported(
-                "Object store protocol".to_owned(),
-            )),
-        }
     }
 }
 
