@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use iceberg_rust::{
     catalog::{
+        bucket::{parse_bucket, Bucket},
         identifier::Identifier,
         namespace::Namespace,
         tabular::{Tabular, TabularMetadata},
@@ -14,7 +15,10 @@ use iceberg_rust::{
     util::strip_prefix,
     view::View,
 };
-use object_store::ObjectStore;
+use object_store::{
+    aws::AmazonS3Builder, gcp::GoogleCloudStorageBuilder, local::LocalFileSystem, memory::InMemory,
+    ObjectStore,
+};
 
 use crate::{
     apis::{configuration, v1_api},
@@ -26,17 +30,14 @@ use crate::{
 #[derive(Debug)]
 pub struct NessieCatalog {
     configuration: configuration::Configuration,
-    object_store: Arc<dyn ObjectStore>,
+    builder: ObjectStoreBuilder,
 }
 
 impl NessieCatalog {
-    pub fn new(
-        configuration: configuration::Configuration,
-        object_store: Arc<dyn ObjectStore>,
-    ) -> Self {
+    pub fn new(configuration: configuration::Configuration, builder: ObjectStoreBuilder) -> Self {
         NessieCatalog {
             configuration,
-            object_store,
+            builder,
         }
     }
 }
@@ -159,13 +160,14 @@ impl Catalog for NessieCatalog {
             _ => Err(IcebergError::InvalidFormat("iceberg table".to_string())),
         })
         .map_err(IcebergError::from)?;
-        let bytes = &self
-            .object_store
+        let bucket = parse_bucket(&path)?;
+        let object_store = self.builder.build(bucket)?;
+        let bytes = object_store
             .get(&strip_prefix(&path).as_str().into())
             .await?
             .bytes()
             .await?;
-        let metadata: TabularMetadata = serde_json::from_str(std::str::from_utf8(bytes)?)?;
+        let metadata: TabularMetadata = serde_json::from_str(std::str::from_utf8(&bytes)?)?;
         let catalog: Arc<dyn Catalog> = self;
         match metadata {
             TabularMetadata::Table(metadata) => Ok(Tabular::Table(
@@ -308,8 +310,42 @@ impl Catalog for NessieCatalog {
         unimplemented!()
     }
     /// Return the associated object store to the catalog
-    fn object_store(&self) -> Arc<dyn ObjectStore> {
-        Arc::clone(&self.object_store)
+    fn object_store(&self, bucket: Bucket) -> Arc<dyn ObjectStore> {
+        self.builder.build(bucket).unwrap()
+    }
+}
+
+#[derive(Debug)]
+pub enum ObjectStoreBuilder {
+    S3(AmazonS3Builder),
+    GCS(GoogleCloudStorageBuilder),
+    Filesystem(Arc<LocalFileSystem>),
+    Memory(Arc<InMemory>),
+}
+
+impl ObjectStoreBuilder {
+    fn build(&self, bucket: Bucket) -> Result<Arc<dyn ObjectStore>, IcebergError> {
+        match (bucket, self) {
+            (Bucket::S3(bucket), Self::S3(builder)) => Ok::<_, IcebergError>(Arc::new(
+                builder
+                    .clone()
+                    .with_bucket_name(bucket)
+                    .build()
+                    .map_err(IcebergError::from)?,
+            )),
+            (Bucket::GCS(bucket), Self::GCS(builder)) => Ok::<_, IcebergError>(Arc::new(
+                builder
+                    .clone()
+                    .with_bucket_name(bucket)
+                    .build()
+                    .map_err(IcebergError::from)?,
+            )),
+            (Bucket::Local, Self::Filesystem(object_store)) => Ok(object_store.clone()),
+            (Bucket::Local, Self::Memory(object_store)) => Ok(object_store.clone()),
+            _ => Err(IcebergError::NotSupported(
+                "Object store protocol".to_owned(),
+            )),
+        }
     }
 }
 
@@ -325,9 +361,12 @@ pub mod tests {
         },
         table::table_builder::TableBuilder,
     };
-    use object_store::{memory::InMemory, ObjectStore};
+    use object_store::memory::InMemory;
 
-    use crate::{apis::configuration::Configuration, catalog::NessieCatalog};
+    use crate::{
+        apis::configuration::Configuration,
+        catalog::{NessieCatalog, ObjectStoreBuilder},
+    };
 
     fn configuration() -> Configuration {
         Configuration {
@@ -343,8 +382,10 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_create_update_drop_table() {
-        let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let catalog: Arc<dyn Catalog> = Arc::new(NessieCatalog::new(configuration(), object_store));
+        let catalog: Arc<dyn Catalog> = Arc::new(NessieCatalog::new(
+            configuration(),
+            ObjectStoreBuilder::Memory(Arc::new(InMemory::new())),
+        ));
         let identifier = Identifier::parse("load_table.table3").unwrap();
         let schema = Schema {
             schema_id: 1,
