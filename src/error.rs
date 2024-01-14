@@ -7,24 +7,44 @@ use crate::apis::{
 
 impl From<Error<GetContentError>> for IcebergError {
     fn from(value: Error<GetContentError>) -> Self {
-        IcebergError::InvalidFormat(format!("{}", value))
+        match value {
+            Error::ResponseError(e) => {
+                IcebergError::InvalidFormat(format!("{}: {}", e.status, e.content))
+            }
+            value => IcebergError::InvalidFormat(format!("{}", value)),
+        }
     }
 }
 
 impl From<Error<GetEntriesError>> for IcebergError {
     fn from(value: Error<GetEntriesError>) -> Self {
-        IcebergError::InvalidFormat(format!("{}", value))
+        match value {
+            Error::ResponseError(e) => {
+                IcebergError::InvalidFormat(format!("{}: {}", e.status, e.content))
+            }
+            value => IcebergError::InvalidFormat(format!("{}", value)),
+        }
     }
 }
 
 impl From<Error<GetNamespacesError>> for IcebergError {
     fn from(value: Error<GetNamespacesError>) -> Self {
-        IcebergError::InvalidFormat(format!("{}", value))
+        match value {
+            Error::ResponseError(e) => {
+                IcebergError::InvalidFormat(format!("{}: {}", e.status, e.content))
+            }
+            value => IcebergError::InvalidFormat(format!("{}", value)),
+        }
     }
 }
 
 impl From<Error<CommitMultipleOperationsError>> for IcebergError {
     fn from(value: Error<CommitMultipleOperationsError>) -> Self {
-        IcebergError::InvalidFormat(format!("{}", value))
+        match value {
+            Error::ResponseError(e) => {
+                IcebergError::InvalidFormat(format!("{}: {}", e.status, e.content))
+            }
+            value => IcebergError::InvalidFormat(format!("{}", value)),
+        }
     }
 }
