@@ -1,7 +1,10 @@
 use iceberg_rust::error::Error as IcebergError;
 
 use crate::apis::{
-    v1_api::{CommitMultipleOperationsError, GetContentError, GetEntriesError, GetNamespacesError},
+    v1_api::{
+        CommitMultipleOperationsError, GetContentError, GetEntriesError, GetNamespacesError,
+        GetReferenceByNameError,
+    },
     Error,
 };
 
@@ -40,6 +43,17 @@ impl From<Error<GetNamespacesError>> for IcebergError {
 
 impl From<Error<CommitMultipleOperationsError>> for IcebergError {
     fn from(value: Error<CommitMultipleOperationsError>) -> Self {
+        match value {
+            Error::ResponseError(e) => {
+                IcebergError::InvalidFormat(format!("{}: {}", e.status, e.content))
+            }
+            value => IcebergError::InvalidFormat(format!("{}", value)),
+        }
+    }
+}
+
+impl From<Error<GetReferenceByNameError>> for IcebergError {
+    fn from(value: Error<GetReferenceByNameError>) -> Self {
         match value {
             Error::ResponseError(e) => {
                 IcebergError::InvalidFormat(format!("{}: {}", e.status, e.content))

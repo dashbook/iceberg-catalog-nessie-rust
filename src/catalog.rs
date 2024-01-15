@@ -20,7 +20,8 @@ use object_store::ObjectStore;
 use crate::{
     apis::{configuration, v1_api},
     models::{
-        self, CommitMeta, Content, ContentKey, ContentV1, Operation, Operations, PutExpectedContent,
+        self, CommitMeta, Content, ContentKey, ContentV1, Operation, Operations,
+        PutExpectedContent, ReferenceV1,
     },
 };
 
@@ -28,13 +29,42 @@ use crate::{
 pub struct NessieCatalog {
     configuration: configuration::Configuration,
     builder: ObjectStoreBuilder,
+    main_hash: Option<String>,
 }
 
 impl NessieCatalog {
-    pub fn new(configuration: configuration::Configuration, builder: ObjectStoreBuilder) -> Self {
+    pub async fn new(
+        configuration: configuration::Configuration,
+        builder: ObjectStoreBuilder,
+    ) -> Result<Self, IcebergError> {
+        let main_hash = if let ReferenceV1::BranchV1 {
+            name: _,
+            metadata: _,
+            hash,
+        } = v1_api::get_reference_by_name(&configuration, "main", None).await?
+        {
+            Ok(hash)
+        } else {
+            Err(IcebergError::InvalidFormat(
+                "Hash doesn't belong to a branch".to_owned(),
+            ))
+        }?;
+        Ok(NessieCatalog {
+            configuration,
+            builder,
+            main_hash,
+        })
+    }
+
+    pub fn new_with_hash(
+        configuration: configuration::Configuration,
+        builder: ObjectStoreBuilder,
+        main_hash: Option<String>,
+    ) -> Self {
         NessieCatalog {
             configuration,
             builder,
+            main_hash,
         }
     }
 }
@@ -60,6 +90,7 @@ impl Catalog for NessieCatalog {
             .map(|entry| Identifier::try_new(&entry.name.elements))
             .collect::<Result<Vec<Identifier>, IcebergError>>()
     }
+
     /// Lists all namespaces in the catalog.
     async fn list_namespaces(&self, parent: Option<&str>) -> Result<Vec<Namespace>, IcebergError> {
         let namespaces = v1_api::get_namespaces(
@@ -90,6 +121,7 @@ impl Catalog for NessieCatalog {
             })
             .collect::<Result<Vec<Namespace>, IcebergError>>()
     }
+
     /// Check if a table exists
     async fn table_exists(&self, identifier: &Identifier) -> Result<bool, IcebergError> {
         v1_api::get_content(
@@ -102,6 +134,7 @@ impl Catalog for NessieCatalog {
         .map(|_| true)
         .map_err(IcebergError::from)
     }
+
     /// Drop a table and delete all data and metadata files.
     async fn drop_table(&self, identifier: &Identifier) -> Result<(), IcebergError> {
         v1_api::commit_multiple_operations(
@@ -125,6 +158,7 @@ impl Catalog for NessieCatalog {
         .map(|_| ())
         .map_err(IcebergError::from)
     }
+
     /// Load a table.
     async fn load_table(self: Arc<Self>, identifier: &Identifier) -> Result<Tabular, IcebergError> {
         let path = v1_api::get_content(
@@ -196,10 +230,12 @@ impl Catalog for NessieCatalog {
             )),
         }
     }
+
     /// Invalidate cached table metadata from current catalog.
     async fn invalidate_table(&self, _identifier: &Identifier) -> Result<(), IcebergError> {
         unimplemented!()
     }
+
     /// Register a table with the catalog if it doesn't exist.
     async fn register_table(
         self: Arc<Self>,
@@ -209,7 +245,7 @@ impl Catalog for NessieCatalog {
         v1_api::commit_multiple_operations(
             &self.configuration,
             "main",
-            None,
+            self.main_hash.as_deref(),
             Some(Operations::new(
                 CommitMeta::default(),
                 vec![Operation::Put {
@@ -223,10 +259,10 @@ impl Catalog for NessieCatalog {
                     content: Box::new(Content::IcebergTable {
                         id: None,
                         metadata_location: metadata_file_location.to_string(),
-                        snapshot_id: None,
-                        schema_id: None,
-                        spec_id: None,
-                        sort_order_id: None,
+                        snapshot_id: Some(1),
+                        schema_id: Some(1),
+                        spec_id: Some(1),
+                        sort_order_id: Some(1),
                         metadata: None,
                     }),
                     expected_content: None,
@@ -240,6 +276,7 @@ impl Catalog for NessieCatalog {
         .map_err(IcebergError::from)?;
         self.load_table(&identifier).await
     }
+
     /// Update a table by atomically changing the pointer to the metadata file
     async fn update_table(
         self: Arc<Self>,
@@ -296,6 +333,7 @@ impl Catalog for NessieCatalog {
         .map(|_| ())?;
         self.load_table(&identifier).await
     }
+
     /// Initialize a catalog given a custom name and a map of catalog properties.
     /// A custom Catalog implementation must have a no-arg constructor. A compute engine like Spark
     /// or Flink will first initialize the catalog without any arguments, and then call this method to
@@ -306,6 +344,7 @@ impl Catalog for NessieCatalog {
     ) -> Result<(), IcebergError> {
         unimplemented!()
     }
+
     /// Return the associated object store to the catalog
     fn object_store(&self, bucket: Bucket) -> Arc<dyn ObjectStore> {
         self.builder.build(bucket).unwrap()
@@ -314,7 +353,7 @@ impl Catalog for NessieCatalog {
 
 #[cfg(test)]
 pub mod tests {
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     use iceberg_rust::{
         catalog::{identifier::Identifier, Catalog},
@@ -327,13 +366,14 @@ pub mod tests {
     use object_store::memory::InMemory;
 
     use crate::{
-        apis::configuration::Configuration,
+        apis::{configuration::Configuration, v1_api},
         catalog::{NessieCatalog, ObjectStoreBuilder},
+        models::Namespace,
     };
 
     fn configuration() -> Configuration {
         Configuration {
-            base_path: "http://localhost:8080".to_string(),
+            base_path: "http://localhost:19120/api".to_string(),
             user_agent: None,
             client: reqwest::Client::new(),
             basic_auth: None,
@@ -345,10 +385,36 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_create_update_drop_table() {
-        let catalog: Arc<dyn Catalog> = Arc::new(NessieCatalog::new(
-            configuration(),
-            ObjectStoreBuilder::Memory(Arc::new(InMemory::new())),
-        ));
+        let configuration = configuration();
+
+        let _ = dbg!(
+            v1_api::create_namespace(
+                &configuration,
+                Namespace {
+                    id: None,
+                    elements: vec!["load_table".to_owned()],
+                    properties: HashMap::new(),
+                },
+                "main",
+                None,
+                Some(Namespace {
+                    id: None,
+                    elements: Vec::new(),
+                    properties: HashMap::new(),
+                }),
+            )
+            .await
+        )
+        .is_ok();
+
+        let catalog: Arc<dyn Catalog> = Arc::new(
+            NessieCatalog::new(
+                configuration,
+                ObjectStoreBuilder::Memory(Arc::new(InMemory::new())),
+            )
+            .await
+            .expect("Failed to create catalog"),
+        );
         let identifier = Identifier::parse("load_table.table3").unwrap();
         let schema = Schema {
             schema_id: 1,
